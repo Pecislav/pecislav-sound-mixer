@@ -1,0 +1,6 @@
+/.deps/
+/build/
+/build-before-relocation/
+/dist/
+/test-output/
+__pycache__/
