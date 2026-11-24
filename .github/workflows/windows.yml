@@ -1,0 +1,58 @@
+name: Build Windows plugin
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download official OBS 33.0.2 portable build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Invoke-RestMethod 'https://api.github.com/repos/obsproject/obs-studio/releases/tags/33.0.2'
+          $asset = $release.assets | Where-Object name -eq 'OBS-Studio-33.0.2-Windows-x64.zip'
+          if (-not $asset) { throw 'OBS release asset not found' }
+          $zipPath = Join-Path $env:RUNNER_TEMP 'obs-33.0.2.zip'
+          Invoke-WebRequest $asset.browser_download_url -OutFile $zipPath
+          if ($asset.digest -and $asset.digest.StartsWith('sha256:')) {
+            $actual = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $asset.digest.Substring(7)) { throw 'OBS asset checksum mismatch' }
+          }
+          $obsPath = Join-Path $env:RUNNER_TEMP 'obs-33.0.2'
+          Expand-Archive -LiteralPath $zipPath -DestinationPath $obsPath
+          if (-not (Test-Path -LiteralPath (Join-Path $obsPath 'bin/64bit/obs64.exe'))) { throw 'OBS ZIP layout mismatch' }
+          "GROUP_MIXER_OBS=$obsPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Prepare portable build tools
+        run: python tools/bootstrap.py
+      - name: Build and test against libobs
+        run: python tools/build-local.py --smoke
+      - name: Build and test Windows setup executable
+        run: |
+          python tools/build-installer.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/build-installer.py --test-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/test-installer.py
+      - name: Package binary and sources
+        run: python tools/package.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pecislav-Group-Mixer-Windows-x64
+          path: |
+            dist/*.zip
+            dist/*.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
